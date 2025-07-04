@@ -1,44 +1,44 @@
 const LocalStrategy = require('passport-local').Strategy;
 const bcrypt = require("bcrypt");
-const mysql = require('mysql');
+const Account = require("./models/Account"); // Import Mongoose model
 
-
-function initialize(connection, passport) {
+function initialize(passport) {
   const authenticateUser = async (username, password, done) => {
-    connection.query('SELECT * FROM accounts WHERE username = ?', [username], async function(error, results, fields) {
-      if (results.length > 0) {
-        try {
-          if (await bcrypt.compare(password, results[0].password)) {
-            const user = {
-              id: results[0].id,
-              username: results[0].username,
-              password: results[0].password
-            };
-            return done(null, user)
-          } else {
-            return done(null, false, {
-              message: "Wrong password"
-            })
-          }
-        } catch (e) {
-          return done(e);
-        }
-      } else {
-        return done(null, false, {
-          message: "User not found"
-        });
-      }
-    })
-  }
-  passport.use(new LocalStrategy({
-    usernameField: 'username',
-    passwordField: "password"
-  }, authenticateUser));
-  passport.serializeUser((user, done) => done(null, user.id));
-  passport.deserializeUser((id, done) => connection.query("select * from accounts where id = ?", [id], function(err, results) {
-    done(err, results[0]);
-  }));
+    try {
+      const user = await Account.findOne({ username: username });
 
+      if (!user) {
+        return done(null, false, { message: "User not found" });
+      }
+
+      const match = await bcrypt.compare(password, user.password);
+      if (match) {
+        return done(null, user);
+      } else {
+        return done(null, false, { message: "Wrong password" });
+      }
+    } catch (err) {
+      return done(err);
+    }
+  };
+
+  passport.use(new LocalStrategy(
+    { usernameField: "username", passwordField: "password" },
+    authenticateUser
+  ));
+
+  passport.serializeUser((user, done) => {
+    done(null, user._id); // Mongoose uses _id
+  });
+
+  passport.deserializeUser(async (id, done) => {
+    try {
+      const user = await Account.findById(id);
+      done(null, user);
+    } catch (err) {
+      done(err, null);
+    }
+  });
 }
 
 module.exports = initialize;

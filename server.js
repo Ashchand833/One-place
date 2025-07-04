@@ -1,15 +1,15 @@
 require("dotenv").config();
 
-var mysql = require('mysql');
-var express = require('express');
-var session = require('express-session');
-const flash = require('express-flash');
-var app = express();
-var bodyParser = require('body-parser');
-var path = require('path');
-var bcrypt = require('bcrypt');
+const express = require("express");
+const session = require("express-session");
+const flash = require("express-flash");
+const bodyParser = require("body-parser");
 const passport = require("passport");
 const cors = require("cors");
+const mongoose = require("mongoose");
+const bcrypt = require("bcrypt");
+
+const app = express();
 
 const {
   getAllDataFromTarget,
@@ -32,14 +32,12 @@ const {
   createNewUser
 } = require("./queries.js");
 
-var connection = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DATABASE,
-  multipleStatements: true,
-  timezone: 'utc'
-});
+// DATABASE CONNECTION (MongoDB with Mongoose)
+mongoose.connect("mongodb+srv://ashtosh:jqZ2SAJt7vQe731t@cluster0.j3bwoss.mongodb.net/", {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+}).then(() => console.log("MongoDB Connected"))
+  .catch(err => console.error(err));
 
 // CONFIGURING OPTIONS
 const corsOptions = {
@@ -49,7 +47,7 @@ const corsOptions = {
 };
 
 const initializePassport = require('./passport-config');
-initializePassport(connection, passport);
+initializePassport(passport); // passport-config must be updated to work with MongoDB
 
 app.use(cors(corsOptions));
 app.use(flash());
@@ -60,14 +58,12 @@ app.use(session({
 }));
 app.use(passport.initialize());
 app.use(passport.session());
-app.use(bodyParser.urlencoded({
-  extended: true
-}));
+app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
-// END OF CONFIGURING OPTIONS
 
+// LOGIN
 app.post('/login', passport.authenticate('local'), (req, res) => {
-  res.send("success")
+  res.send("success");
 });
 
 app.get('/logout', (req, res) => {
@@ -76,191 +72,124 @@ app.get('/logout', (req, res) => {
 });
 
 app.get('/user', (req, res) => {
-  res.send(req.user)
+  res.send(req.user);
 });
 
-// ALL ORDERS SECTION *
+// ORDERS
 app.get("/orders", async (req, res) => {
-  const queryAllOrders = await getAllDataFromTarget("orders");
-  const queryAllClients = await getAllDataFromTarget("clients");
-  const mergedQueries = queryAllOrders.map(order => ({
-    ...order,
-    ...queryAllClients.find(client => client.client_id === order.client_id)
+  const orders = await getAllDataFromTarget("orders");
+  const clients = await getAllDataFromTarget("clients");
+  const merged = orders.map(order => ({
+    ...order.toObject(),
+    ...clients.find(client => client._id.toString() === order.client_id.toString())?.toObject()
   }));
-  res.send(mergedQueries)
+  res.send(merged);
 });
-// END OF ALL ORDERS SECTION *
 
-// ORDER BY ID SECTION *
+// ORDER BY ID
 app.get("/order_by_id", async (req, res) => {
   const orderId = req.query.id;
-  const queryOrderById = await getOrdersById(orderId);
-  const queryProductsByOrderID = await getProductsBySingleOrderId(orderId);
-  const queryClientById = await getClientById(queryOrderById.client_id);
-
-  Promise.all([queryOrderById, queryProductsByOrderID, queryClientById]).then((results) => {
-    res.send(results)
-  })
+  const order = await getOrdersById(orderId);
+  const products = await getProductsBySingleOrderId(orderId);
+  const client = await getClientById(order.client_id);
+  res.send([order, products, client]);
 });
-// END OF ORDER BY ID SECTION *
 
-// CREATE NEW ORDER * 
+// CREATE NEW ORDER
 app.post("/neworder", async (req, res) => {
-  let newOrderData = req.body.clientDetails;
-  // if new client was selected
-  let isNewClient = req.body.isNewClient;
-  // if existing client was selected
-  let oldClientId = req.body.oldClientId;
-  let dataDetails = newOrderData;
-  let productsData = newOrderData.products;
-  let totalCostOfProducts = productsData.reduce(
-    (accumulator, product) =>
-      accumulator + (product.itemPrice * product.amount || 0),
-    0
-  );
-  let currentDate = new Date();
+  const { clientDetails, isNewClient, oldClientId } = req.body;
+  const productsData = clientDetails.products;
+  const totalCost = productsData.reduce((sum, p) => sum + (p.itemPrice * p.amount || 0), 0);
+  const date = new Date();
 
-  // if new client is being created
-  if(isNewClient) {
-    const queryAddNewClient = await addNewClient(dataDetails);
-    const queryAddNewOrder = await addNewOrder(dataDetails, queryAddNewClient, totalCostOfProducts, currentDate);
-    const queryAddMultipleProducts = await addMultipleProducts(queryAddNewOrder, productsData);
-    Promise.all([queryAddNewClient, queryAddNewOrder, queryAddMultipleProducts]).then(() => {
-      res.send("success");
-    })
-  } else {
-    const queryAddNewOrder = await addNewOrder(dataDetails, oldClientId, totalCostOfProducts, currentDate);
-    const queryAddMultipleProducts = await addMultipleProducts(queryAddNewOrder, productsData);
-    Promise.all([queryAddNewOrder, queryAddMultipleProducts]).then(() => {
-      res.send("success");
-    })
-  }
-})
-// END OF CREATING NEW ORDER *
-
-// UPDATING ORDER SECTION *
-app.post("/updateorder", async (req, res) => {
-  let orderId = req.body.orderId;
-  let clientData = req.body.clientDetails.client;
-  let orderData = req.body.clientDetails.order;
-  let productsData = req.body.clientDetails.products;
-  let deletedIds = req.body.deletedItems.ids;
-  let totalCostOfProducts = productsData.reduce(
-    (accumulator, product) =>
-      accumulator + (product.itemPrice * product.amount || 0),
-    0
-  );
-  let currentDate = new Date();
-
-  const queryUpdateClientById = await updateClientById(clientData, orderData.client_id);
-  const queryUpdateOrderById = await updateOrderById(totalCostOfProducts, orderData.status, orderId);
-  const queryAddMultipleProducts = await addMultipleProducts(orderId, productsData);
-
-  // if user is deleteing some products from order
-  if(deletedIds.length > 0) {
-    const queryDeleteProductsById = await deleteProductsById(deletedIds);
-    Promise.all([queryUpdateClientById, queryUpdateOrderById, queryAddMultipleProducts, queryDeleteProductsById]).then(() => {
-      res.send("success");
-    });
-  } else {
-    Promise.all([queryUpdateClientById, queryUpdateOrderById, queryAddMultipleProducts]).then(() => {
-      res.send("success");
-    });
-  }
-})
-// END OF UPDATING ORDER SECTION *
-
-
-// ALL CLIENTS SECTION *
-app.get("/clients", async (req, res) => {
-  const queryAllClientsWithOrdersCount = await getAllClientsWithOrdersCount();
-  Promise.resolve(queryAllClientsWithOrdersCount).then((results) => {
-    res.send(results);
-  })
-})
-// END OF ALL CLIENTS SECTION *
-
-// ADD NEW CLIENT SECTION *
-app.post("/newclient", async (req, res) => {
-  const clientDetails = req.body.clientDetails;
-  const queryAddingNewClient = await addNewClient(clientDetails);
-  Promise.resolve(queryAddingNewClient).then(() => {
+  if (isNewClient) {
+    const newClient = await addNewClient(clientDetails);
+    const newOrder = await addNewOrder(clientDetails, newClient._id, totalCost, date);
+    await addMultipleProducts(newOrder._id, productsData);
     res.send("success");
-  })
-})
-// END OF ADDING NEW CLIENT SECTION *
+  } else {
+    const newOrder = await addNewOrder(clientDetails, oldClientId, totalCost, date);
+    await addMultipleProducts(newOrder._id, productsData);
+    res.send("success");
+  }
+});
 
-// CLIENT BY ID SECTION *
+// UPDATE ORDER
+app.post("/updateorder", async (req, res) => {
+  const { orderId, clientDetails, deletedItems } = req.body;
+  const { client, order, products } = clientDetails;
+  const totalCost = products.reduce((sum, p) => sum + (p.itemPrice * p.amount || 0), 0);
+
+  await updateClientById(client, order.client_id);
+  await updateOrderById(totalCost, order.status, orderId);
+  await addMultipleProducts(orderId, products);
+
+  if (deletedItems.ids.length > 0) {
+    await deleteProductsById(deletedItems.ids);
+  }
+
+  res.send("success");
+});
+
+// ALL CLIENTS
+app.get("/clients", async (req, res) => {
+  const clients = await getAllClientsWithOrdersCount();
+  res.send(clients);
+});
+
+// ADD CLIENT
+app.post("/newclient", async (req, res) => {
+  const newClient = await addNewClient(req.body.clientDetails);
+  res.send("success");
+});
+
+// CLIENT BY ID
 app.get("/client_by_id", async (req, res) => {
   const clientId = req.query.id;
-
-  const queryClientById = await getClientById(clientId);
-  const queryOrdersByClientId = await getOrdersByClientId(clientId);
-  const queryProductsByOrderId = await getProductsByMultipleOrderId(queryOrdersByClientId);
-
-  Promise.all([queryClientById, queryOrdersByClientId, queryProductsByOrderId]).then((results) => {
-    res.send(results);
-  });
+  const client = await getClientById(clientId);
+  const orders = await getOrdersByClientId(clientId);
+  const products = await getProductsByMultipleOrderId(orders);
+  res.send([client, orders, products]);
 });
-// END OF CLIENT BY ID SECTION *
 
-// DASHBOARD DATA SECTION *
-app.get("/dashboard_data", async (req,res) => {
-  const queryDashboardData = await getDasboardData();
-  Promise.resolve(queryDashboardData).then((results) => {
-    res.send(results);
-  })
-})
-// END OF DASHBOARD DATA SECTION *
+// DASHBOARD DATA
+app.get("/dashboard_data", async (req, res) => {
+  const dashboardData = await getDasboardData();
+  res.send(dashboardData);
+});
 
-// ADD NEW EVENT SECTION *
+// ADD NEW EVENT
 app.post("/newevent", async (req, res) => {
-  const eventData = req.body.eventData;
-  const queryAddNewEvent = await addNewEvent(eventData);
-  Promise.resolve(queryAddNewEvent).then(() => {
-    res.send("success");
-  })
-})
-// END OF NEW EVENT SECTION *
-
-// GET ALL EVENTS *
-app.get("/events", async (req, res) => {
-  const queryAllEvents = await getAllDataFromTarget("calendar");
-  Promise.resolve(queryAllEvents).then((results) => {
-    res.send(results);
-  })
-})
-// END OF ALL EVENTS *
-
-// GET USERS FOR ADMIN PANEL SECTION *
-app.get("/getusers", async (req, res) => {
-  const queryGetUsersForAdminPanel = await getUsersForAdminPanel();
-  Promise.resolve(queryGetUsersForAdminPanel).then((results) => {
-    res.send(results);
-  })
-})
-// END OF GET USERS FOR ADMIN PANEL SECTION *
-
-// DELETE USER BY ID SECTION *
-app.post("/deleteuser", async (req, res) => {
-  let userId = req.body.userId;
-  const queryDeleteUser = await deleteUserById(userId);
-  Promise.resolve(queryDeleteUser).then(() => {
-    res.send("success");
-  })
+  await addNewEvent(req.body.eventData);
+  res.send("success");
 });
-// DELETE USER BY ID SECTION *
 
-// CREATE NEW USER SECTION *
+// GET ALL EVENTS
+app.get("/events", async (req, res) => {
+  const events = await getAllDataFromTarget("calendar");
+  res.send(events);
+});
+
+// GET USERS FOR ADMIN PANEL
+app.get("/getusers", async (req, res) => {
+  const users = await getUsersForAdminPanel();
+  res.send(users);
+});
+
+// DELETE USER
+app.post("/deleteuser", async (req, res) => {
+  await deleteUserById(req.body.userId);
+  res.send("success");
+});
+
+// CREATE USER
 app.post("/newuser", async (req, res) => {
-  const userDetails = req.body.userDetails;
+  const { userDetails } = req.body;
   const hashedPassword = await bcrypt.hash(userDetails.password, 10);
-  const queryCreateNewUser = await createNewUser(userDetails, hashedPassword);
-  Promise.resolve(queryCreateNewUser).then(() => {
-    res.send("success");
-  })
-})
-// END OF CREATE NEW USER SECTION *
+  await createNewUser(userDetails, hashedPassword);
+  res.send("success");
+});
 
+// START SERVER
 const port = 5000;
-app.listen(port, () => `Server running on port ${port}`);
+app.listen(port, () => console.log(`Server running on port ${port}`));

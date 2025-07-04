@@ -27,15 +27,15 @@ function Clients() {
     axios
       .get("http://localhost:5000/clients", { withCredentials: true })
       .then((res) => {
-        if (res.data != null) {
+        if (res?.data != null) {
           setClientsData(
-            res.data[0].map((t1) => ({
+            res?.data[0]?.map((t1) => ({
               ...t1,
               ...res.data[1].find((t2) => t2.client_id === t1.client_id),
             }))
           );
           setFilteredData(
-            res.data[0].map((t1) => ({
+            res.data[0] && res.data[0].map((t1) => ({
               ...t1,
               ...res.data[1].find((t2) => t2.client_id === t1.client_id),
             }))

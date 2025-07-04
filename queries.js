@@ -1,282 +1,156 @@
-const { query } = require('express');
-var mysql = require('mysql');
-var connection = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DATABASE,
-  multipleStatements: true,
-  timezone: 'utc'
-});
+const Client = require("./models/Client");
+const Order = require("./models/Order");
+const Product = require("./models/Product");
+const CalendarEvent = require("./models/CalendarEvent");
+const Account = require("./models/Account");
 
-function getAllDataFromTarget(target) {
-  const queryString = `SELECT * from ${target}`;
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, function(error, result) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve(result);
-      }
-    })
-  })
+// Get all data from a target collection
+async function getAllDataFromTarget(target) {
+  const models = {
+    clients: Client,
+    orders: Order,
+    calendar: CalendarEvent
+  };
+  return await models[target].find({});
 }
 
-
-function getAllClientsWithOrdersCount() {
-  const queryString = "SELECT * from clients as clients; select c.client_id, count(o.id) as ordersCount from clients c join orders o where c.client_id = o.client_id group by client_id";
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, function(error, result) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve(result);
-      }
-    })
-  })
+// Get all clients and their order count
+async function getAllClientsWithOrdersCount() {
+  const clients = await Client.find({});
+  const counts = await Order.aggregate([
+    { $group: { _id: "$client_id", ordersCount: { $sum: 1 } } }
+  ]);
+  return { clients, counts };
 }
 
-function getOrdersById(orderId) {
-  const queryString = "SELECT * from orders where id = ?";
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, [orderId], function(error, results) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve(results[0]);
-      }
-    })
-  })
+async function getOrdersById(orderId) {
+  return await Order.findById(orderId);
 }
 
-function addNewOrder(orderDetails, clientId, totalCost, date) {
-  const queryString = "INSERT into orders VALUES ('', ?, ?, ?, ?, ?)";
-  const passedValues = [clientId, date, totalCost, orderDetails.status, orderDetails.worker];
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, passedValues, function(error, results) {
-      if(error) {
-        console.log(error);
-      }
-      resolve(results.insertId);
-    })
-  })
-
-}
-
-function getClientById(clientId) {
-  const queryString = "SELECT * from clients where client_id = ?";
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, [clientId], function (error, clientByIdResults) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve(clientByIdResults[0])
-      }
-    })
-  })
-}
-function getProductById(productId) {
-  const queryString = "SELECT * from products where id = ?";
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, [productId], function (error, productById) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve(productById[0])
-      }
-    })
-  })
-}
-
-function getOrdersByClientId(clientId) {
-  const queryString = "SELECT * from orders where client_id = ?";
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, [clientId], function (error, ordersByClientIdResults) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve(ordersByClientIdResults)
-      }
-    })
-  })
-}
-
-function getProductsBySingleOrderId(orderId) {
-  const queryString = "SELECT * from products where order_id = ?";
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, [orderId], function(error, productsBySingleOrderIdResults) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve(productsBySingleOrderIdResults);
-      }
-    })
-  })
-}
-
-function getProductsByMultipleOrderId(orders) {
-  const queryString = "SELECT * from products where order_id = ?";
-  var productsByIdResults = orders.map((order, index) => {
-    return new Promise((resolve, reject) => {
-      connection.query(queryString, [order.id], function(error, productsByOrderIdResults) {
-        if(error) {
-          console.log(error);
-        } else {
-          resolve(productsByOrderIdResults);
-        }
-      })
-    })
+async function addNewOrder(orderDetails, clientId, totalCost, date) {
+  const newOrder = new Order({
+    client_id: clientId,
+    date,
+    price: totalCost,
+    status: orderDetails.status,
+    worker: orderDetails.worker
   });
-  return Promise.all(productsByIdResults);
+  const saved = await newOrder.save();
+  return saved._id;
 }
 
-function updateClientById(clientData, client_id) {
-  const queryString = "UPDATE clients SET client = ?, clientDetails = ?, phone = ?, country = ?, street = ?, city = ?, postalCode = ? where client_id = ?";
-  const passedValues = [clientData.client, clientData.clientDetails, clientData.phone, clientData.country, clientData.street, clientData.city, clientData.postalCode, client_id];
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, passedValues, function(error) {
-      if(error) {
-        console.log(error);
-      }
-      resolve("success");
-    })
-  })
+async function getClientById(clientId) {
+  return await Client.findById(clientId);
 }
 
-function updateOrderById(totalCost, orderStatus, orderId) {
-  const queryString = "UPDATE orders SET price = ?, status = ? where id = ?";
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, [totalCost, orderStatus, orderId], function(error) {
-      if(error) {
-        console.log(error);
-      }
-      resolve("success");
-    })
-  })
+async function getProductById(productId) {
+  return await Product.findById(productId);
 }
 
-function addMultipleProducts(orderId, productsArray) {
-  const queryString = "INSERT into products VALUES('', ?, ?, ?, ?, ?)";
-  const queryStringForCheck = "SELECT * from products where id = ?";
-  return new Promise((resolve, reject) => {
-    productsArray.forEach((product) => {
-      // check if product with same id is in database if it is, skip adding it
-      connection.query(queryStringForCheck, [product.id], function(productExistError, productExistResult) {
-        if(productExistError) {
-          console.log(productExistError);
-        }
-        // if item is not in database, add it
-        if (!productExistResult.length) {
-          const passedValues = [orderId, product.productName, product.amount, product.itemPrice, (product.amount * product.itemPrice)];
-          connection.query(queryString, passedValues, function(error) {
-            if (error) {
-              console.log(error);
-            }
-          })
-        }
-      })
-    });
-    resolve("success");
-  })
+async function getOrdersByClientId(clientId) {
+  return await Order.find({ client_id: clientId });
 }
 
-function deleteProductsById(deletedIds) {
-  const queryString = "DELETE from products WHERE id IN (?)";
-  const sortedDeletedIds = deletedIds.sort((a, b) => a - b);
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, [sortedDeletedIds], function(error) {
-      if(error) {
-        console.log(error);
-      }
-      resolve("success");
-    })
-  })
+async function getProductsBySingleOrderId(orderId) {
+  return await Product.find({ order_id: orderId });
 }
 
-function addNewClient(clientDetails) {
-  const queryString = "INSERT into clients VALUES ('', ?, ?, ?, ?, ?, ?, ?, ?)";
-  const currentDate = new Date();
-  const passedValues = [clientDetails.clientName, clientDetails.clientDetails, clientDetails.phone, clientDetails.country, clientDetails.street, clientDetails.city, clientDetails.postalCode, currentDate]
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, passedValues, function(error, results) {
-      if(error) {
-        console.log(error);
-      }
-      resolve(results.insertId);
-    })
-  })
+async function getProductsByMultipleOrderId(orders) {
+  const orderIds = orders.map(o => o._id);
+  return await Product.find({ order_id: { $in: orderIds } });
 }
 
-function getDasboardData() {
-  const queryString = `
-  SELECT * from clients as clients;
-  SELECT * from orders as orders;
-  SELECT * from calendar where deadlineDate >= curdate() and DATEDIFF(deadlineDate, CURDATE()) <= 5 order by deadlineDate asc limit 2
-  `;
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, function(error, result) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve(result);
-      }
-    })
-  })
+async function updateClientById(clientData, clientId) {
+  await Client.findByIdAndUpdate(clientId, {
+    client: clientData.client,
+    clientDetails: clientData.clientDetails,
+    phone: clientData.phone,
+    country: clientData.country,
+    street: clientData.street,
+    city: clientData.city,
+    postalCode: clientData.postalCode
+  });
+  return "success";
 }
 
-function addNewEvent(eventData) {
-  const queryString = "INSERT into calendar values ('', ?, ?, ?, ?, ?, ?)";
-  const passedValues = [eventData.title, eventData.details, eventData.deadlineDate, eventData.hours, eventData.addDate, eventData.worker];
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, passedValues, function(error) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve("success");
-      }
-    })
-  })
+async function updateOrderById(totalCost, orderStatus, orderId) {
+  await Order.findByIdAndUpdate(orderId, {
+    price: totalCost,
+    status: orderStatus
+  });
+  return "success";
 }
 
-function deleteUserById(userId) {
-  const queryString = "DELETE from accounts WHERE id = ?";
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, [userId], function(error) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve("success")
-      }
-    })
-  })
+async function addMultipleProducts(orderId, productsArray) {
+  for (const p of productsArray) {
+    const exists = await Product.findOne({ _id: p.id });
+    if (!exists) {
+      const newProduct = new Product({
+        order_id: orderId,
+        productName: p.productName,
+        amount: p.amount,
+        itemPrice: p.itemPrice,
+        totalPrice: p.amount * p.itemPrice
+      });
+      await newProduct.save();
+    }
+  }
+  return "success";
 }
 
-function getUsersForAdminPanel() {
-  const queryString = "SELECT id, username, role, dateCreated from accounts";
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, function(error, result) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve(result);
-      }
-    })
-  })
+async function deleteProductsById(deletedIds) {
+  await Product.deleteMany({ _id: { $in: deletedIds } });
+  return "success";
 }
 
-function createNewUser(userDetails, hashedPassword) {
-  const queryString = "INSERT into accounts VALUES ('', ?, ?, ?, ?)";
-  const currentDate = new Date();
-  const passedValues = [userDetails.username, hashedPassword, userDetails.role, currentDate];
-  return new Promise((resolve, reject) => {
-    connection.query(queryString, passedValues, function(error) {
-      if(error) {
-        console.log(error);
-      } else {
-        resolve("success");
-      }
-    })
-  })
+async function addNewClient(clientDetails) {
+  const newClient = new Client({
+    client: clientDetails.clientName,
+    clientDetails: clientDetails.clientDetails,
+    phone: clientDetails.phone,
+    country: clientDetails.country,
+    street: clientDetails.street,
+    city: clientDetails.city,
+    postalCode: clientDetails.postalCode,
+    createdAt: new Date()
+  });
+  const saved = await newClient.save();
+  return saved._id;
+}
+
+async function getDasboardData() {
+  const clients = await Client.find({});
+  const orders = await Order.find({});
+  const calendar = await CalendarEvent.find({
+    deadlineDate: { $gte: new Date() }
+  }).sort("deadlineDate").limit(2);
+  return [clients, orders, calendar];
+}
+
+async function addNewEvent(eventData) {
+  const newEvent = new CalendarEvent(eventData);
+  await newEvent.save();
+  return "success";
+}
+
+async function deleteUserById(userId) {
+  await Account.findByIdAndDelete(userId);
+  return "success";
+}
+
+async function getUsersForAdminPanel() {
+  return await Account.find({}, "id username role dateCreated");
+}
+
+async function createNewUser(userDetails, hashedPassword) {
+  const newUser = new Account({
+    username: userDetails.username,
+    password: hashedPassword,
+    role: userDetails.role,
+    dateCreated: new Date()
+  });
+  await newUser.save();
+  return "success";
 }
 
 module.exports = {
